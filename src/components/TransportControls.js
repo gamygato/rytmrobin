@@ -1,25 +1,28 @@
 import React from 'react';
 import { FaPlay, FaPause, FaRedo } from 'react-icons/fa';
+import { RetroIconButton } from './RetroComponents';
 
 const TransportControls = ({ 
   isPlaying, 
   bpm, 
-  division,
   onPlayPause, 
   onBPMChange,
-  onDivisionChange,
   onReset,
   disabled
 }) => {
   return (
     <div className={`transport-controls ${disabled ? 'disabled' : ''}`}>
-      <button 
-        className="play-button"
+      <RetroIconButton 
+        icon={isPlaying ? FaPause : FaPlay}
         onClick={onPlayPause}
+        isActive={isPlaying}
+        activeColor="#cf6679"
+        inactiveColor="#03dac5"
+        size={48}
         disabled={disabled}
-      >
-        {isPlaying ? <FaPause /> : <FaPlay />}
-      </button>
+        title={isPlaying ? "Pause" : "Play"}
+        aria-label={isPlaying ? "Pause" : "Play"}
+      />
       
       <div className="bpm-control">
         <span>BPM</span>
@@ -34,27 +37,16 @@ const TransportControls = ({
         <span>{bpm}</span>
       </div>
       
-      <div className="division-control">
-        <span>Division</span>
-        <select 
-          value={division} 
-          onChange={(e) => onDivisionChange(parseInt(e.target.value))}
-          disabled={disabled}
-        >
-          <option value="4">1/4</option>
-          <option value="8">1/8</option>
-          <option value="16">1/16</option>
-          <option value="32">1/32</option>
-        </select>
-      </div>
-      
-      <button 
-        className="reset-button"
+      <RetroIconButton 
+        icon={FaRedo}
         onClick={onReset}
+        isActive={false}
+        inactiveColor="#6200ea"
+        size={42}
         disabled={disabled}
-      >
-        <FaRedo />
-      </button>
+        title="Reset"
+        aria-label="Reset"
+      />
     </div>
   );
 };

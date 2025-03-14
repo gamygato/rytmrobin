@@ -516,44 +516,106 @@ export const playSample = async (name, destination) => {
     return playSyntheticSound(name, destination);
   }
   
-  // Use Tone.js directly if available
-  if (sample.toneFallback && sample.toneBuffer) {
-    debug('SampleManager', `Playing sample ${name} with Tone.js`);
-    // Connect to the provided destination or directly to the master output
-    const player = new Tone.Player(sample.toneBuffer);
-    if (destination) {
-      player.connect(destination);
-    } else {
-      player.toDestination();
+  try {
+    // Get the audio context - this must be available
+    const audioCtx = getAudioContext();
+    if (!audioCtx) {
+      debug('SampleManager', 'No audio context available, falling back to synthetic sound');
+      return playSyntheticSound(name, destination);
     }
-    player.start();
-    return Promise.resolve(true);
-  }
-  
-  // Use Web Audio API if available
-  if (getAudioContext() && sample.buffer) {
-    try {
-      debug('SampleManager', `Playing sample ${name} with Web Audio API`);
-      const source = getAudioContext().createBufferSource();
-      source.buffer = sample.buffer;
+    
+    // Ensure audio context is running
+    if (audioCtx.state === 'suspended') {
+      try {
+        debug('SampleManager', 'Resuming suspended audio context');
+        await audioCtx.resume();
+      } catch (resumeError) {
+        console.warn('Error resuming audio context:', resumeError);
+        // Continue anyway
+      }
+    }
+    
+    // Use Tone.js directly if available
+    if (sample.toneFallback && sample.toneBuffer) {
+      debug('SampleManager', `Playing sample ${name} with Tone.js`);
       
-      // If we have a destination, connect to it, otherwise connect to the audio context destination
+      // Verify the destination if provided
+      let validDestination = true;
       if (destination) {
-        source.connect(destination);
-      } else {
-        source.connect(getAudioContext().destination);
+        try {
+          // Check if destination has valid connect method
+          validDestination = typeof destination.connect === 'function';
+        } catch (e) {
+          debug('SampleManager', `Invalid destination provided, will use default output: ${e.message}`);
+          validDestination = false;
+        }
       }
       
-      source.start();
-      return Promise.resolve(true);
-    } catch (e) {
-      console.error(`Error playing sample ${name}:`, e);
-      return Promise.reject(e);
+      try {
+        // Create a player for the sample
+        const player = new Tone.Player(sample.toneBuffer);
+        
+        // Connect to the provided destination or directly to the master output
+        if (destination && validDestination) {
+          player.connect(destination);
+        } else {
+          player.toDestination();
+        }
+        
+        player.start();
+        return Promise.resolve(true);
+      } catch (toneError) {
+        console.warn(`Error playing ${name} with Tone.js:`, toneError);
+        // Try Web Audio API as fallback
+      }
     }
+    
+    // Use Web Audio API if available
+    if (sample.buffer) {
+      try {
+        debug('SampleManager', `Playing sample ${name} with Web Audio API`);
+        const source = audioCtx.createBufferSource();
+        source.buffer = sample.buffer;
+        
+        // Check if destination is valid
+        let validDestination = true;
+        if (destination) {
+          try {
+            // This will throw if the destination is invalid
+            if (typeof destination.connect !== 'function') {
+              validDestination = false;
+            }
+          } catch (e) {
+            debug('SampleManager', `Invalid destination, will use default output: ${e.message}`);
+            validDestination = false;
+          }
+        }
+        
+        // Connect to destination or default output
+        if (destination && validDestination) {
+          try {
+            source.connect(destination);
+          } catch (connectError) {
+            debug('SampleManager', `Error connecting to destination, using default: ${connectError.message}`);
+            source.connect(audioCtx.destination);
+          }
+        } else {
+          source.connect(audioCtx.destination);
+        }
+        
+        // Start the sound
+        source.start(0);
+        return Promise.resolve(true);
+      } catch (e) {
+        console.error(`Error playing sample ${name} with Web Audio API:`, e);
+      }
+    }
+  } catch (error) {
+    console.error(`Unexpected error playing sample ${name}:`, error);
   }
   
   // Fall back to synthetic if all else fails
-  debug('SampleManager', `Falling back to synthetic sound for ${name}`);
+  debug('SampleManager', `All methods failed, falling back to synthetic sound for ${name}`);
   return playSyntheticSound(name, destination);
 };
 

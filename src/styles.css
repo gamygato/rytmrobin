@@ -1,12 +1,25 @@
 /* Base styles */
 body {
   margin: 0;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 
+  font-family: 'Nunito', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 
     Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+  font-weight: 400;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   background-color: #121212;
   color: white;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Nunito', sans-serif;
+  font-weight: 700;
+}
+
+h1 {
+  margin-top: 0;
+  color: #bb86fc;
+  font-size: 2.5rem;
+  font-weight: 800;
 }
 
 .App {
@@ -23,12 +36,6 @@ body {
   font-size: calc(10px + 1vmin);
   color: white;
   padding: 20px;
-}
-
-h1 {
-  margin-top: 0;
-  color: #bb86fc;
-  font-size: 2.5rem;
 }
 
 .controls {
@@ -97,6 +104,8 @@ button {
   color: white;
   cursor: pointer;
   font-size: 0.9rem;
+  font-family: 'Nunito', sans-serif;
+  font-weight: 600;
   transition: background-color 0.3s;
 }
 
@@ -131,13 +140,29 @@ button.primary {
 .track-control {
   background-color: #1e1e1e;
   border-radius: 8px;
-  padding: 15px;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-  transition: box-shadow 0.3s, transform 0.3s;
+  margin-bottom: 15px;
+  overflow: hidden;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+  position: relative;
 }
 
 .track-control.triggered {
-  box-shadow: 0 0 0 2px #6200ea, 0 4px 6px rgba(0, 0, 0, 0.1);
+  background-color: #332940;
+  transition: background-color 0.1s ease;
+}
+
+.track-control .card-header {
+  background-color: #2c2c2c;
+  color: #bb86fc;
+  padding: 12px 15px;
+  font-weight: bold;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.track-control .card-content {
+  padding: 15px;
 }
 
 .track-header {
@@ -180,24 +205,30 @@ button.primary {
 }
 
 .mute-button {
-  background-color: transparent;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
   border: none;
-  color: white;
-  cursor: pointer;
-  width: 40px;
-  height: 40px;
   display: flex;
-  align-items: center;
   justify-content: center;
-  transition: color 0.3s;
+  align-items: center;
+  cursor: pointer;
+  background-color: #333;
+  color: #fff;
+  transition: all 0.2s ease;
 }
 
 .mute-button:hover {
-  color: #cf6679;
+  background-color: #444;
 }
 
 .mute-button.muted {
-  color: #cf6679;
+  background-color: #f44336;
+  color: white;
+}
+
+.mute-button.muted:hover {
+  background-color: #d32f2f;
 }
 
 .track-body {
@@ -746,4 +777,174 @@ button.primary {
   padding: 4px 8px;
   font-size: 0.9em;
   flex-grow: 1;
+}
+
+/* Retro Card Styling */
+.retro-card {
+  background-color: #1e1e1e;
+  border: 3px solid #444;
+  border-radius: 8px;
+  box-shadow: 4px 4px 0px rgba(0, 0, 0, 0.3);
+  margin-bottom: 20px;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.retro-card:hover {
+  transform: translate(-2px, -2px);
+  box-shadow: 6px 6px 0px rgba(0, 0, 0, 0.3);
+}
+
+.retro-card.triggered {
+  border-color: #ff5722;
+  box-shadow: 0 0 8px rgba(255, 87, 34, 0.6);
+}
+
+.retro-card-header {
+  background-color: #333;
+  color: white;
+  padding: 10px 15px;
+  font-size: 16px;
+  font-weight: 700;
+  font-family: 'Nunito', sans-serif;
+  display: flex;
+  justify-content: flex-start;
+  align-items: center;
+  border-bottom: 2px solid #444;
+}
+
+.retro-card-content {
+  padding: 15px;
+}
+
+/* Update input and select elements to use Nunito */
+input, select, textarea {
+  font-family: 'Nunito', sans-serif;
+  font-weight: 400;
+}
+
+/* Add styles for the track controls buttons container */
+.track-controls-buttons {
+  display: flex;
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: 5;
+  gap: 6px;
+}
+
+/* Style the play button */
+.play-button {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  cursor: pointer;
+  background-color: #333;
+  color: #fff;
+  transition: all 0.2s ease;
+}
+
+.play-button:hover {
+  background-color: #444;
+}
+
+.play-button.playing {
+  background-color: #4CAF50;
+  color: white;
+}
+
+.play-button.playing:hover {
+  background-color: #3d8c40;
+}
+
+/* Style the mute button for consistency */
+.mute-button {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  cursor: pointer;
+  background-color: #333;
+  color: #fff;
+  transition: all 0.2s ease;
+}
+
+.mute-button:hover {
+  background-color: #444;
+}
+
+.mute-button.muted {
+  background-color: #f44336;
+  color: white;
+}
+
+.mute-button.muted:hover {
+  background-color: #d32f2f;
+}
+
+/* Style the retro icon button */
+.retro-icon-button {
+  border-radius: 0 !important;
+  margin: 0 4px;
+  box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.3);
+  image-rendering: pixelated !important;
+  -ms-interpolation-mode: nearest-neighbor;
+  image-rendering: -webkit-optimize-contrast;
+  image-rendering: -moz-crisp-edges;
+  image-rendering: -o-pixelated;
+  position: relative;
+  z-index: 10;
+}
+
+.retro-icon-button:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.3);
+}
+
+.retro-icon-button:active {
+  transform: translate(1px, 1px);
+  box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.3);
+}
+
+.retro-icon-button.active {
+  box-shadow: inset 2px 2px 0 rgba(0, 0, 0, 0.3);
+}
+
+.retro-icon-button.active:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: inset 2px 2px 0 rgba(0, 0, 0, 0.3), 3px 3px 0 rgba(0, 0, 0, 0.2);
+}
+
+.transport-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 15px;
+  margin-bottom: 20px;
+  background-color: #222;
+  border: 3px solid #444;
+  border-radius: 0;
+  box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.3);
+  image-rendering: pixelated;
+}
+
+.transport-controls.disabled {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.transport-controls .retro-icon-button {
+  margin: 0 5px;
+}
+
+.transport-controls .retro-icon-button[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+  box-shadow: none;
 } 

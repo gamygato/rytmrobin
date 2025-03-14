@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { FaVolumeMute, FaPlus, FaEllipsisH, FaTimes, FaMagic } from 'react-icons/fa';
+import { FaVolumeMute, FaEllipsisH, FaTimes, FaMagic, FaPlay, FaPause } from 'react-icons/fa';
 import { commonPatterns } from '../engine/patternParser';
+import { Card, RetroIconButton } from '../components/RetroComponents';
 
 const PatternPresets = ({ onSelectPattern }) => {
   const [category, setCategory] = useState('basic');
@@ -124,128 +125,6 @@ const SampleSelector = ({ availableSamples, onAddSample, onRemoveSample, current
 
 // Add an Effects component that will be used for each track
 const TrackEffects = ({ onApplyEffect }) => {
-  const [activeEffect, setActiveEffect] = useState('none');
-  const [effectAmount, setEffectAmount] = useState(0.5);
-  
-  const effects = [
-    { id: 'none', name: 'No Effect' },
-    { id: 'delay', name: 'Delay' },
-    { id: 'reverb', name: 'Reverb' },
-    { id: 'distortion', name: 'Distortion' },
-    { id: 'lowpass', name: 'Low-Pass Filter' },
-    { id: 'highpass', name: 'High-Pass Filter' }
-  ];
-  
-  const handleApplyEffect = () => {
-    if (activeEffect === 'none') return;
-    onApplyEffect(activeEffect, effectAmount);
-  };
-  
-  return (
-    <div className="track-effects">
-      <div className="effects-header">
-        <h4>Effects</h4>
-      </div>
-      <div className="effects-row">
-        <select 
-          value={activeEffect}
-          onChange={(e) => setActiveEffect(e.target.value)}
-          className="effect-select"
-        >
-          {effects.map(effect => (
-            <option key={effect.id} value={effect.id}>{effect.name}</option>
-          ))}
-        </select>
-        
-        <input 
-          type="range"
-          min="0"
-          max="1"
-          step="0.01"
-          value={effectAmount}
-          onChange={(e) => setEffectAmount(parseFloat(e.target.value))}
-          className="effect-amount"
-          disabled={activeEffect === 'none'}
-        />
-        
-        <button 
-          className="apply-effect-button"
-          onClick={handleApplyEffect}
-          disabled={activeEffect === 'none'}
-        >
-          Apply
-        </button>
-      </div>
-    </div>
-  );
-};
-
-// Add a PatternFunctions component
-const PatternFunctions = ({ onApplyFunction }) => {
-  const patternFunctions = [
-    { id: 'reverse', name: 'Reverse Pattern' },
-    { id: 'speed2x', name: '2x Speed' },
-    { id: 'speed05x', name: '1/2 Speed' },
-    { id: 'offsetPlus', name: 'Offset +0.25' },
-    { id: 'offsetMinus', name: 'Offset -0.25' },
-    { id: 'every2nd', name: 'Every 2nd Beat' },
-    { id: 'euclid', name: 'Euclidean Rhythm' }
-  ];
-  
-  return (
-    <div className="pattern-functions">
-      <div className="functions-header">
-        <h4>Pattern Functions</h4>
-      </div>
-      <div className="functions-buttons">
-        {patternFunctions.map(func => (
-          <button 
-            key={func.id}
-            className="function-button"
-            onClick={() => onApplyFunction(func.id)}
-          >
-            {func.name}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-};
-
-// Add this helper function to provide a human-readable description
-const getDivisionLabel = (division) => {
-  switch (parseInt(division)) {
-    case 4: return "Quarter notes (1/4)";
-    case 8: return "Eighth notes (1/8)";
-    case 16: return "Sixteenth notes (1/16)";
-    case 32: return "32nd notes (1/32)";
-    case 3: return "Quarter note triplets";
-    case 6: return "Eighth note triplets";
-    case 12: return "Sixteenth note triplets";
-    case 5: return "Quintuplets (1/4)";
-    case 10: return "Quintuplets (1/8)";
-    case 7: return "Septuplets (1/4)";
-    case 14: return "Septuplets (1/8)";
-    default: return `Division: ${division}`;
-  }
-};
-
-const TrackControl = ({ 
-  trackIndex, 
-  track, 
-  availableSamples,
-  onPatternChange,
-  onVolumeChange,
-  onMuteToggle,
-  onAddSample,
-  onRemoveSample,
-  onApplyEffect,
-  onApplyFunction,
-  onDivisionChange
-}) => {
-  const [isExpanded, setIsExpanded] = useState(false);
-  const [showPatternPresets, setShowPatternPresets] = useState(false);
-  const [activeTab, setActiveTab] = useState('samples'); // samples, effects, functions
   const [selectedEffect, setSelectedEffect] = useState('none');
   const [effectParams, setEffectParams] = useState({
     amount: 0.5,
@@ -260,36 +139,23 @@ const TrackControl = ({
     rate: 0.5
   });
   
-  const handlePatternPresetSelect = (pattern) => {
-    onPatternChange(trackIndex, pattern);
-    setShowPatternPresets(false);
-  };
-  
-  const handleAddSample = (sample) => {
-    onAddSample(trackIndex, sample);
-  };
-  
-  const handleRemoveSample = (sampleIndex) => {
-    onRemoveSample(trackIndex, sampleIndex);
-  };
+  const effects = [
+    { id: 'none', name: 'No Effect' },
+    { id: 'delay', name: 'Delay' },
+    { id: 'reverb', name: 'Reverb' },
+    { id: 'distortion', name: 'Distortion' },
+    { id: 'lowpass', name: 'Low-Pass Filter' },
+    { id: 'highpass', name: 'High-Pass Filter' },
+    { id: 'chorus', name: 'Chorus' },
+    { id: 'phaser', name: 'Phaser' }
+  ];
   
   const handleApplyEffect = () => {
-    // Convert parameters based on effect type
-    let paramsToApply = { ...effectParams };
-    
-    // Apply the effect with appropriate parameters
-    onApplyEffect(trackIndex, selectedEffect, paramsToApply);
+    if (selectedEffect === 'none') return;
+    // Apply effect with all relevant parameters
+    onApplyEffect(selectedEffect, effectParams);
   };
-  
-  const handleApplyFunction = (functionId) => {
-    onApplyFunction && onApplyFunction(trackIndex, functionId);
-  };
-  
-  // Handle effect selection change
-  const handleEffectChange = (e) => {
-    setSelectedEffect(e.target.value);
-  };
-  
+
   // Handle parameter change
   const handleParamChange = (param, value) => {
     setEffectParams(prev => ({
@@ -298,7 +164,7 @@ const TrackControl = ({
     }));
   };
   
-  // Get parameters based on selected effect
+  // Get effect-specific parameters UI
   const getEffectParameters = () => {
     switch (selectedEffect) {
       case 'none':
@@ -571,6 +437,122 @@ const TrackControl = ({
     }
   };
   
+  return (
+    <div className="track-effects">
+      <div className="effects-header">
+        <h4>Effects</h4>
+      </div>
+      <div className="effects-row">
+        <select 
+          value={selectedEffect}
+          onChange={(e) => setSelectedEffect(e.target.value)}
+          className="effect-select"
+        >
+          {effects.map(effect => (
+            <option key={effect.id} value={effect.id}>{effect.name}</option>
+          ))}
+        </select>
+      </div>
+      
+      {getEffectParameters()}
+      
+      <button 
+        className="apply-effect-button"
+        onClick={handleApplyEffect}
+        disabled={selectedEffect === 'none'}
+      >
+        Apply Effect
+      </button>
+    </div>
+  );
+};
+
+// Add a PatternFunctions component
+const PatternFunctions = ({ onApplyFunction }) => {
+  const patternFunctions = [
+    { id: 'reverse', name: 'Reverse Pattern' },
+    { id: 'speed2x', name: '2x Speed' },
+    { id: 'speed05x', name: '1/2 Speed' },
+    { id: 'offsetPlus', name: 'Offset +0.25' },
+    { id: 'offsetMinus', name: 'Offset -0.25' },
+    { id: 'every2nd', name: 'Every 2nd Beat' },
+    { id: 'euclid', name: 'Euclidean Rhythm' }
+  ];
+  
+  return (
+    <div className="pattern-functions">
+      <div className="functions-header">
+        <h4>Pattern Functions</h4>
+      </div>
+      <div className="functions-buttons">
+        {patternFunctions.map(func => (
+          <button 
+            key={func.id}
+            className="function-button"
+            onClick={() => onApplyFunction(func.id)}
+          >
+            {func.name}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// Add this helper function to provide a human-readable description
+const getDivisionLabel = (division) => {
+  switch (parseInt(division)) {
+    case 4: return "Quarter notes (1/4)";
+    case 8: return "Eighth notes (1/8)";
+    case 16: return "Sixteenth notes (1/16)";
+    case 32: return "32nd notes (1/32)";
+    case 3: return "Quarter note triplets";
+    case 6: return "Eighth note triplets";
+    case 12: return "Sixteenth note triplets";
+    case 5: return "Quintuplets (1/4)";
+    case 10: return "Quintuplets (1/8)";
+    case 7: return "Septuplets (1/4)";
+    case 14: return "Septuplets (1/8)";
+    default: return `Division: ${division}`;
+  }
+};
+
+const TrackControl = ({ 
+  trackIndex, 
+  track, 
+  availableSamples,
+  onPatternChange,
+  onVolumeChange,
+  onMuteToggle,
+  onAddSample,
+  onRemoveSample,
+  onApplyEffect,
+  onApplyFunction,
+  onDivisionChange,
+  onTrackPlayPause
+}) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [showPatternPresets, setShowPatternPresets] = useState(false);
+  const [activeTab, setActiveTab] = useState('samples'); // samples, effects, functions
+  
+  const handlePatternPresetSelect = (pattern) => {
+    onPatternChange(trackIndex, pattern);
+    setShowPatternPresets(false);
+  };
+  
+  const handleAddSample = (sample) => {
+    onAddSample(trackIndex, sample);
+  };
+  
+  const handleRemoveSample = (sampleIndex) => {
+    onRemoveSample(trackIndex, sampleIndex);
+  };
+  
+  const handleApplyFunction = (functionId) => {
+    onApplyFunction && onApplyFunction(trackIndex, functionId);
+  };
+
+  // Render the division selector UI
   const renderDivisionSelector = () => (
     <div className="track-division">
       <div className="track-division-info" title={getDivisionLabel(track.division)}>
@@ -597,29 +579,43 @@ const TrackControl = ({
   );
   
   return (
-    <div className={`track-control ${track.isTriggered ? 'triggered' : ''}`}>
-      <div className="track-header">
-        <div className="track-name">Track {trackIndex + 1}</div>
-        <div className="track-samples">
-          {track.samples.map((sample, i) => (
-            <div 
-              key={i} 
-              className={`sample-indicator ${i === track.currentSampleIndex ? 'active' : ''}`}
-              title={sample}
-            />
-          ))}
-          {track.samples.length > 0 && (
-            <div className="current-sample">
-              {track.samples[track.currentSampleIndex]}
-            </div>
-          )}
-        </div>
-        <button 
-          className={`mute-button ${track.mute ? 'muted' : ''}`}
+    <Card 
+      className={`track-control ${track.isTriggered ? 'triggered' : ''}`}
+      header={`Track ${trackIndex + 1}`}
+    >
+      <div className="track-samples">
+        {track.samples.map((sample, i) => (
+          <div 
+            key={i} 
+            className={`sample-indicator ${i === track.currentSampleIndex ? 'active' : ''}`}
+            title={sample}
+          />
+        ))}
+        {track.samples.length > 0 && (
+          <div className="current-sample">
+            {track.samples[track.currentSampleIndex]}
+          </div>
+        )}
+      </div>
+      <div className="track-controls-buttons">
+        <RetroIconButton 
+          icon={track.isPlaying ? FaPause : FaPlay}
+          onClick={() => onTrackPlayPause(trackIndex)}
+          isActive={track.isPlaying}
+          activeColor="#4CAF50"
+          inactiveColor="#333"
+          title={track.isPlaying ? "Pause track" : "Play track"}
+          aria-label={track.isPlaying ? "Pause track" : "Play track"}
+        />
+        <RetroIconButton 
+          icon={FaVolumeMute}
           onClick={() => onMuteToggle(trackIndex)}
-        >
-          <FaVolumeMute />
-        </button>
+          isActive={track.mute}
+          activeColor="#f44336"
+          inactiveColor="#333"
+          title={track.mute ? "Unmute track" : "Mute track"}
+          aria-label={track.mute ? "Unmute track" : "Mute track"}
+        />
       </div>
       
       <div className="track-body">
@@ -703,35 +699,9 @@ const TrackControl = ({
             )}
             
             {activeTab === 'effects' && (
-              <div className="effects-section">
-                <div className="effect-selector">
-                  <label>Effect:</label>
-                  <select 
-                    value={selectedEffect}
-                    onChange={handleEffectChange}
-                    className="effect-dropdown"
-                  >
-                    <option value="none">None</option>
-                    <option value="delay">Delay</option>
-                    <option value="reverb">Reverb</option>
-                    <option value="distortion">Distortion</option>
-                    <option value="lowpass">Low Pass Filter</option>
-                    <option value="highpass">High Pass Filter</option>
-                    <option value="chorus">Chorus</option>
-                    <option value="phaser">Phaser</option>
-                  </select>
-                </div>
-                
-                {getEffectParameters()}
-                
-                <button 
-                  className="apply-effect-button"
-                  onClick={handleApplyEffect}
-                  disabled={selectedEffect === 'none'}
-                >
-                  Apply Effect
-                </button>
-              </div>
+              <TrackEffects 
+                onApplyEffect={(effectType, params) => onApplyEffect(trackIndex, effectType, params)} 
+              />
             )}
             
             {activeTab === 'functions' && (
@@ -741,18 +711,8 @@ const TrackControl = ({
             )}
           </div>
         )}
-        
-        <button 
-          className="add-sample-button"
-          onClick={() => {
-            setIsExpanded(!isExpanded);
-            if (!isExpanded) setActiveTab('samples');
-          }}
-        >
-          <FaPlus /> {isExpanded ? 'Hide Panel' : 'Show Panel'}
-        </button>
       </div>
-    </div>
+    </Card>
   );
 };
 

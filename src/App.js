@@ -11,7 +11,9 @@ import {
   audioContext,
   updateTrackSamples,
   applyTrackEffect,
-  updateTrackDivision
+  updateTrackDivision,
+  startTrackPlayback,
+  stopTrackPlayback
 } from './engine/audioEngine';
 import { 
   preloadDefaultSamples, 
@@ -58,10 +60,10 @@ function App() {
   const [bpm, setBpmState] = useState(120);
   const [division, setDivision] = useState(16);
   const [trackStates, setTrackStates] = useState([
-    { samples: [], pattern: "", mute: false, volume: 0.8, currentSampleIndex: 0, isTriggered: false, division: 16 },
-    { samples: [], pattern: "", mute: false, volume: 0.8, currentSampleIndex: 0, isTriggered: false, division: 16 },
-    { samples: [], pattern: "", mute: false, volume: 0.8, currentSampleIndex: 0, isTriggered: false, division: 16 },
-    { samples: [], pattern: "", mute: false, volume: 0.8, currentSampleIndex: 0, isTriggered: false, division: 16 }
+    { samples: [], pattern: "", mute: false, volume: 0.8, currentSampleIndex: 0, isTriggered: false, division: 16, isPlaying: false },
+    { samples: [], pattern: "", mute: false, volume: 0.8, currentSampleIndex: 0, isTriggered: false, division: 16, isPlaying: false },
+    { samples: [], pattern: "", mute: false, volume: 0.8, currentSampleIndex: 0, isTriggered: false, division: 16, isPlaying: false },
+    { samples: [], pattern: "", mute: false, volume: 0.8, currentSampleIndex: 0, isTriggered: false, division: 16, isPlaying: false }
   ]);
   const [currentBeat, setCurrentBeat] = useState(0);
   const [availableSamples, setAvailableSamples] = useState([]);
@@ -122,19 +124,15 @@ function App() {
     const interval = setInterval(() => {
       setCurrentBeat((prev) => (prev + 1) % (division));
       
-      // Update track states for visual feedback
+      // Track highlighting disabled as requested
+      // Instead of updating isTriggered to true randomly, we always set it to false
       setTrackStates(prevStates => prevStates.map(track => ({
         ...track,
-        isTriggered: Math.random() > 0.7 // Simulated trigger for demonstration
+        isTriggered: false // Always false to disable the red highlighting
       })));
       
-      // Reset trigger visual after 100ms
-      setTimeout(() => {
-        setTrackStates(prevStates => prevStates.map(track => ({
-          ...track,
-          isTriggered: false
-        })));
-      }, 100);
+      // No need for timeout to reset trigger visual since it's always false
+      
     }, (60000 / bpm) / 4);
     
     return () => {
@@ -154,13 +152,36 @@ function App() {
     }
     
     if (isPlaying) {
+      // When stopping, stop global playback AND all individual tracks
       stopPlayback();
+      
+      // Stop all individual track playback
+      trackStates.forEach((track, index) => {
+        if (track.isPlaying) {
+          stopTrackPlayback(index);
+        }
+      });
+      
+      // Update all track states to reflect they are paused
+      setTrackStates(prevStates => prevStates.map(track => ({
+        ...track,
+        isPlaying: false
+      })));
     } else {
+      // When playing, start global playback and all tracks
       const success = startPlayback();
       debug("startPlayback returned:", success);
-      if (!success) {
-        debug("startPlayback failed, but we'll continue anyway");
-      }
+      
+      // Start playback for all tracks
+      trackStates.forEach((track, index) => {
+        startTrackPlayback(index);
+      });
+      
+      // Update all track states to reflect they are playing
+      setTrackStates(prevStates => prevStates.map(track => ({
+        ...track,
+        isPlaying: true
+      })));
     }
     setIsPlaying(!isPlaying);
   };
@@ -186,6 +207,20 @@ function App() {
       stopPlayback();
       setIsPlaying(false);
     }
+    
+    // Stop all individual track playback and reset their playing state
+    trackStates.forEach((track, index) => {
+      if (track.isPlaying) {
+        stopTrackPlayback(index);
+      }
+    });
+    
+    // Update all track states to set isPlaying to false
+    setTrackStates(prevStates => prevStates.map(track => ({
+      ...track,
+      isPlaying: false
+    })));
+    
     setCurrentBeat(0);
     // Additional reset logic if needed
   };
@@ -199,13 +234,22 @@ function App() {
     setTrackPattern(trackIndex, pattern);
   };
   
-  // Handle volume change
+  // Handle volume change for a track
   const handleVolumeChange = (trackIndex, volume) => {
-    debug(`Changing volume for track ${trackIndex} to ${volume}`);
-    setTrackStates(prevStates => prevStates.map((track, i) => 
-      i === trackIndex ? { ...track, volume } : track
-    ));
+    console.log(`Setting volume for track ${trackIndex} to ${volume}`);
+    
+    // Update the audio engine volume for this track
     setTrackVolume(trackIndex, volume);
+    
+    // Update the track state in our React state
+    setTrackStates(prevStates => {
+      const newStates = [...prevStates];
+      newStates[trackIndex] = {
+        ...newStates[trackIndex],
+        volume: volume
+      };
+      return newStates;
+    });
   };
   
   // Handle mute toggle
@@ -389,6 +433,59 @@ function App() {
     updateTrackDivision(trackIndex, division);
   };
   
+  // Handle individual track play/pause
+  const handleTrackPlayPause = (trackIndex) => {
+    debug(`Toggling play/pause for track ${trackIndex}`);
+    
+    // Get current playing state before updating
+    const currentlyPlaying = trackStates[trackIndex].isPlaying;
+    
+    try {
+      if (currentlyPlaying) {
+        // Pausing a track - only affects this track
+        stopTrackPlayback(trackIndex);
+        
+        // Update just this track's state to paused
+        setTrackStates(prevStates => prevStates.map((track, i) => 
+          i === trackIndex ? { ...track, isPlaying: false } : track
+        ));
+      } else {
+        // Check if global playback is active
+        if (!isPlaying) {
+          // If global playback is not active, start it first
+          try {
+            const success = startPlayback();
+            debug("startPlayback returned:", success);
+            setIsPlaying(true);
+          } catch (err) {
+            console.error("Error starting global playback:", err);
+            // Continue with individual track playback even if global start fails
+          }
+        }
+        
+        // Now start this specific track
+        try {
+          startTrackPlayback(trackIndex);
+        } catch (err) {
+          console.error(`Error starting track ${trackIndex}:`, err);
+          // If track start fails, we still want to update UI
+        }
+        
+        // Update just this track's state to playing
+        setTrackStates(prevStates => prevStates.map((track, i) => 
+          i === trackIndex ? { ...track, isPlaying: true } : track
+        ));
+      }
+    } catch (error) {
+      console.error(`Error in handleTrackPlayPause for track ${trackIndex}:`, error);
+      // Update UI state to reflect what happened
+      const newPlayingState = !currentlyPlaying;
+      setTrackStates(prevStates => prevStates.map((track, i) => 
+        i === trackIndex ? { ...track, isPlaying: newPlayingState } : track
+      ));
+    }
+  };
+  
   // If there's an error, show the error message
   if (errorMessage) {
     return (
@@ -420,10 +517,8 @@ function App() {
         <TransportControls 
           isPlaying={isPlaying}
           bpm={bpm}
-          division={division}
           onPlayPause={handlePlayPause}
           onBPMChange={handleBPMChange}
-          onDivisionChange={handleDivisionChange}
           onReset={handleReset}
           disabled={!audioInitialized}
         />
@@ -449,6 +544,7 @@ function App() {
             onApplyEffect={handleApplyEffect}
             onApplyFunction={handleApplyFunction}
             onDivisionChange={handleTrackDivisionChange}
+            onTrackPlayPause={handleTrackPlayPause}
           />
         ))}
       </div>

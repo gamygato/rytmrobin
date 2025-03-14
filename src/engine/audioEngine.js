@@ -44,13 +44,70 @@ const loadPlaySampleFn = async () => {
 export const playSampleByName = async (name, trackIndex) => {
   const fn = await loadPlaySampleFn();
   if (fn) {
-    // If a track index is provided, and we have a channel for that track, use it
-    if (trackIndex !== undefined && trackChannels[trackIndex]) {
-      debug('PlaySample', `Playing ${name} through track channel ${trackIndex}`);
-      return fn(name, trackChannels[trackIndex]);
-    } else {
-      // Otherwise play directly to the main output
-      return fn(name);
+    try {
+      // Make sure audio context is running
+      if (audioContext && audioContext.state === 'suspended') {
+        debug('PlaySample', `Resuming audio context before playing ${name}`);
+        try {
+          await audioContext.resume();
+        } catch (error) {
+          console.warn(`Error resuming audio context: ${error.message}`);
+          // Continue anyway
+        }
+      }
+      
+      // Check if trackIndex is valid and we have a channel for that track
+      if (trackIndex !== undefined && trackChannels[trackIndex]) {
+        try {
+          debug('PlaySample', `Playing ${name} through track channel ${trackIndex}`);
+          
+          // Check if the node has been disposed or invalidated
+          let isValidNode = true;
+          try {
+            // This will throw if the node is disposed or invalid
+            if (trackChannels[trackIndex].connect && typeof trackChannels[trackIndex].connect === 'function') {
+              // The node appears valid
+            } else {
+              isValidNode = false;
+            }
+          } catch (e) {
+            debug('PlaySample', `Track channel ${trackIndex} appears to be invalid, will recreate`);
+            isValidNode = false;
+          }
+          
+          // If the channel node is invalid, recreate it
+          if (!isValidNode) {
+            debug('PlaySample', `Recreating channel for track ${trackIndex}`);
+            try {
+              // Remove the old reference
+              delete trackChannels[trackIndex];
+              
+              // Create a new gain node
+              const gainNode = audioContext.createGain();
+              gainNode.gain.value = tracks[trackIndex].volume;
+              gainNode.connect(audioContext.destination);
+              trackChannels[trackIndex] = gainNode;
+            } catch (nodeError) {
+              debug('PlaySample', `Failed to recreate channel node: ${nodeError.message}`);
+              // Continue, but will use default output
+              return fn(name); // Play to default output as fallback
+            }
+          }
+          
+          return await fn(name, trackChannels[trackIndex]);
+        } catch (channelError) {
+          console.warn(`Error playing through channel for track ${trackIndex}:`, channelError);
+          debug('PlaySample', `Falling back to default output for sample ${name}`);
+          // If there's an error playing through the channel, try direct output
+          return await fn(name);
+        }
+      } else {
+        // Play directly to the main output
+        return await fn(name);
+      }
+    } catch (error) {
+      console.error(`Error in playSampleByName for ${name}:`, error);
+      return Promise.reject(error);
     }
   } else {
     console.error('Cannot play sample, playSample function not loaded');
@@ -86,7 +143,8 @@ export const tracks = Array(config.numTracks).fill().map(() => ({
   pattern: "0 1", // Default pattern (can be edited per track)
   volume: 1,
   mute: false,
-  division: 16 // Similar to the PD patch's knob1 control
+  division: 16, // Similar to the PD patch's knob1 control
+  isPlaying: false // Whether this track is actively playing
 }));
 
 let activePatterns = [];
@@ -102,6 +160,9 @@ strudelInstance = {
   stop: () => debug("Mock Strudel stop called"),
   setTempo: (bpm) => debug("Mock Strudel setTempo called with", bpm)
 };
+
+// Track-specific playback interval handlers
+const trackIntervals = {};
 
 // Initialize the Strudel engine
 export const initAudioEngine = async () => {
@@ -253,13 +314,54 @@ export const setTrackPattern = (trackIndex, pattern) => {
 // Set track volume
 export const setTrackVolume = (trackIndex, volume) => {
   debug(`Setting volume for track ${trackIndex}: ${volume}`);
-  tracks[trackIndex].volume = volume;
   
-  // Update if playing
-  if (activePatterns.length > 0) {
-    stopPlayback();
-    startPlayback();
+  // Update the track's volume value
+  if (trackIndex >= 0 && trackIndex < tracks.length) {
+    tracks[trackIndex].volume = volume;
+    
+    // If this track has a channel node, update its volume directly
+    if (trackChannels[trackIndex]) {
+      try {
+        // Some implementations use .volume, others use .gain.value
+        if (trackChannels[trackIndex].volume !== undefined) {
+          trackChannels[trackIndex].volume.value = volume;
+        } else if (trackChannels[trackIndex].gain !== undefined) {
+          trackChannels[trackIndex].gain.value = volume;
+        } else {
+          // Create a gain node if one doesn't exist
+          const gainNode = audioContext.createGain();
+          gainNode.gain.value = volume;
+          
+          // Connect it properly
+          if (trackChannels[trackIndex].connect) {
+            // Disconnect from destination if already connected
+            try {
+              trackChannels[trackIndex].disconnect();
+            } catch (e) {
+              // Ignore errors if not connected
+            }
+            
+            // Connect through the gain node
+            trackChannels[trackIndex].connect(gainNode);
+            gainNode.connect(audioContext.destination);
+            
+            // Store the gain node reference
+            trackChannels[trackIndex].gainNode = gainNode;
+          }
+        }
+        debug(`Successfully applied volume ${volume} to track ${trackIndex}`);
+      } catch (err) {
+        console.error(`Error applying volume to track ${trackIndex}:`, err);
+      }
+    }
   }
+  
+  // If we have track-specific intervals running, update them directly
+  if (trackIntervals[trackIndex]) {
+    // The track interval is already running, no need to restart
+    // Volume will be applied on the next trigger
+  } 
+  // For global playback, we don't need to restart since volume is checked on each trigger
 };
 
 // Toggle mute for a track
@@ -343,41 +445,201 @@ function shouldTriggerPattern(pattern, currentBeat, division = 16) {
   }
 }
 
+// Start playback of a specific track
+export const startTrackPlayback = (trackIndex) => {
+  debug('AudioEngine', `Starting playback for track ${trackIndex}`);
+  
+  if (!isInitialized) {
+    debug('AudioEngine', 'Audio engine not initialized yet');
+    return false;
+  }
+  
+  if (trackIndex < 0 || trackIndex >= tracks.length) {
+    console.error(`Invalid track index: ${trackIndex}`);
+    return false;
+  }
+  
+  try {
+    // Make sure audio context is running
+    if (audioContext && audioContext.state === 'suspended') {
+      debug('AudioEngine', `Attempting to resume suspended audio context for track ${trackIndex}`);
+      // We don't want to wait for the promise to resolve, just trigger it
+      audioContext.resume().catch(error => {
+        console.error(`Error resuming audio context for track ${trackIndex}:`, error);
+      });
+    }
+    
+    // Update track state
+    tracks[trackIndex].isPlaying = true;
+    
+    // Safety check - if trackChannels[trackIndex] exists but is invalid, remove it
+    if (trackChannels[trackIndex]) {
+      try {
+        // Test if the channel is still valid
+        if (typeof trackChannels[trackIndex].connect !== 'function') {
+          debug('AudioEngine', `Track channel ${trackIndex} has invalid connect method, will recreate`);
+          delete trackChannels[trackIndex];
+        }
+      } catch (e) {
+        debug('AudioEngine', `Track channel ${trackIndex} threw error on access, will recreate: ${e.message}`);
+        delete trackChannels[trackIndex];
+      }
+    }
+    
+    // Initialize or get the track channel
+    if (!trackChannels[trackIndex]) {
+      // Create a gain node for volume control
+      try {
+        // Ensure audio context is initialized
+        if (!audioContext) {
+          throw new Error("Audio context not initialized");
+        }
+        
+        const gainNode = audioContext.createGain();
+        gainNode.gain.value = tracks[trackIndex].volume; // Set initial volume
+        gainNode.connect(audioContext.destination);
+        trackChannels[trackIndex] = gainNode;
+        debug('AudioEngine', `Created gain node for track ${trackIndex} with volume ${tracks[trackIndex].volume}`);
+      } catch (e) {
+        console.error(`Error creating gain node for track ${trackIndex}:`, e);
+        // Continue without a channel - we'll use the default output
+      }
+    } else {
+      // Ensure the volume is set correctly
+      try {
+        if (trackChannels[trackIndex].gain) {
+          trackChannels[trackIndex].gain.value = tracks[trackIndex].volume;
+        }
+      } catch (e) {
+        debug('AudioEngine', `Could not set volume for track ${trackIndex}: ${e.message}`);
+      }
+    }
+    
+    // If we already have an interval for this track, clear it first
+    if (trackIntervals[trackIndex]) {
+      clearInterval(trackIntervals[trackIndex]);
+    }
+    
+    // Start a new interval for this track that will check and play samples
+    // based on the track's pattern and division
+    let trackTick = 0;
+    
+    trackIntervals[trackIndex] = setInterval(() => {
+      const track = tracks[trackIndex];
+      
+      // Skip empty or muted tracks
+      if (track.samples.length === 0 || track.mute || !track.isPlaying) {
+        return;
+      }
+      
+      // Check if this track should trigger on this beat using its own division
+      if (shouldTriggerPattern(track.pattern, trackTick, track.division || 16)) {
+        debug(`Track ${trackIndex} triggered on track tick ${trackTick} (division: ${track.division || 16})`);
+        
+        // Get the current sample
+        const sampleName = track.samples[track.currentSampleIndex];
+        if (sampleName) {
+          // Play the sample
+          debug(`Playing sample ${sampleName} from track ${trackIndex}`);
+          playSampleByName(sampleName, trackIndex).catch(err => {
+            console.warn(`Error playing sample ${sampleName} on track ${trackIndex}:`, err);
+          });
+          
+          // Advance to the next sample for this track
+          advanceTrackSample(trackIndex);
+        }
+      }
+      
+      // Increment the tick for this track
+      trackTick = (trackTick + 1) % 16;
+    }, (60000 / currentBPM) / 4); // Use quarter notes as the base tick rate
+    
+    debug('AudioEngine', `Track ${trackIndex} playback started`);
+    return true;
+  } catch (error) {
+    console.error(`Error starting playback for track ${trackIndex}:`, error);
+    return false;
+  }
+};
+
+// Stop playback of a specific track
+export const stopTrackPlayback = (trackIndex) => {
+  debug('AudioEngine', `Stopping playback for track ${trackIndex}`);
+  
+  if (trackIndex < 0 || trackIndex >= tracks.length) {
+    console.error(`Invalid track index: ${trackIndex}`);
+    return false;
+  }
+  
+  try {
+    // Update track state
+    tracks[trackIndex].isPlaying = false;
+    
+    // Clear the interval for this track
+    if (trackIntervals[trackIndex]) {
+      clearInterval(trackIntervals[trackIndex]);
+      delete trackIntervals[trackIndex];
+    }
+    
+    debug('AudioEngine', `Track ${trackIndex} playback stopped`);
+    return true;
+  } catch (error) {
+    console.error(`Error stopping playback for track ${trackIndex}:`, error);
+    return false;
+  }
+};
+
+// Modify startPlayback to check and respect individual track playback states
 export const startPlayback = () => {
   debug("startPlayback called, isInitialized =", isInitialized);
   
-  // Make sure audio context is running
-  if (audioContext && audioContext.state === 'suspended') {
-    debug("Resuming audio context before playback");
-    audioContext.resume().catch(error => {
-      console.error("Error resuming audio context:", error);
+  try {
+    // Make sure audio context is running
+    if (audioContext && audioContext.state === 'suspended') {
+      debug("Resuming audio context before playback");
+      audioContext.resume().catch(error => {
+        console.error("Error resuming audio context:", error);
+      });
+    }
+    
+    debug("Starting playback");
+    
+    // Make sure all tracks with samples have patterns
+    const validTracks = tracks.filter(track => track.samples.length > 0);
+    debug(`${validTracks.length} tracks with samples`);
+    
+    // For now, we'll use a simpler way to handle patterns for testing
+    activePatterns = validTracks.map((track, index) => {
+      debug(`Creating simple pattern for track ${index}`);
+      return { track, index };
     });
+    
+    // Start the metronome using browser audio
+    try {
+      startMetronome();
+    } catch (metronomeError) {
+      console.error("Error starting metronome:", metronomeError);
+      // Continue even if metronome fails
+    }
+    
+    // Start the strudel instance if it exists
+    if (strudelInstance && typeof strudelInstance.start === 'function') {
+      debug(`Starting playback with ${activePatterns.length} active patterns`);
+      try {
+        strudelInstance.start();
+      } catch (strudelError) {
+        console.error("Error starting strudel instance:", strudelError);
+        // Continue even if strudel start fails
+      }
+    } else {
+      debug("Using mock playback mode");
+    }
+    
+    return true; // Always return success
+  } catch (error) {
+    console.error("Error in startPlayback:", error);
+    return false; // Return failure
   }
-  
-  debug("Starting playback");
-  
-  // Make sure all tracks with samples have patterns
-  const validTracks = tracks.filter(track => track.samples.length > 0);
-  debug(`${validTracks.length} tracks with samples`);
-  
-  // For now, we'll use a simpler way to handle patterns for testing
-  activePatterns = validTracks.map((track, index) => {
-    debug(`Creating simple pattern for track ${index}`);
-    return { track, index };
-  });
-  
-  // Start the metronome using browser audio
-  startMetronome();
-  
-  // Start the strudel instance if it exists
-  if (strudelInstance && typeof strudelInstance.start === 'function') {
-    debug(`Starting playback with ${activePatterns.length} active patterns`);
-    strudelInstance.start();
-  } else {
-    debug("Using mock playback mode");
-  }
-  
-  return true; // Always return success
 };
 
 // Simple metronome function using browser audio
@@ -424,44 +686,46 @@ function startMetronome() {
       }
     }
     
-    // Play a short beep for the metronome on quarter notes (every 4 ticks)
-    if (beat % 4 === 0 && audioContext) {
-      try {
-        const oscillator = audioContext.createOscillator();
-        const gainNode = audioContext.createGain();
-        
-        oscillator.frequency.value = 880;
-        gainNode.gain.value = 0.05; // Lower volume for metronome clicks
-        
-        oscillator.connect(gainNode);
-        gainNode.connect(audioContext.destination);
-        
-        oscillator.start();
-        oscillator.stop(audioContext.currentTime + 0.05);
-      } catch (error) {
-        debug("Error playing metronome tick:", error);
-      }
-    }
+    // Metronome beep disabled as requested
+    // (Previously played a short beep for the metronome on quarter notes)
     
     currentTick++;
   }, (60000 / currentBPM) / 4); // Keep using quarter notes as the base tick rate
 }
 
+// Modify stopPlayback to not affect individual track play states
 export const stopPlayback = () => {
   debug("stopPlayback called");
   
-  if (strudelInstance && typeof strudelInstance.stop === 'function') {
-    strudelInstance.stop();
+  try {
+    if (strudelInstance && typeof strudelInstance.stop === 'function') {
+      try {
+        strudelInstance.stop();
+      } catch (strudelError) {
+        console.error("Error stopping strudel instance:", strudelError);
+      }
+    }
+    
+    // Stop the metronome
+    if (metronomeInterval) {
+      try {
+        clearInterval(metronomeInterval);
+        metronomeInterval = null;
+      } catch (metronomeError) {
+        console.error("Error clearing metronome interval:", metronomeError);
+      }
+    }
+    
+    // Note: We no longer stop individual track playback here
+    // Individual tracks should remain playing if they were playing before
+    
+    activePatterns = [];
+    debug("Global playback stopped, active patterns cleared");
+    return true;
+  } catch (error) {
+    console.error("Error in stopPlayback:", error);
+    return false;
   }
-  
-  // Stop the metronome
-  if (metronomeInterval) {
-    clearInterval(metronomeInterval);
-    metronomeInterval = null;
-  }
-  
-  activePatterns = [];
-  debug("Playback stopped, active patterns cleared");
 };
 
 // eslint-disable-next-line no-unused-vars
@@ -547,6 +811,17 @@ export const cleanupTrackResources = (trackIndex) => {
 export const applyTrackEffect = async (trackIndex, effectType, params = {}) => {
   debug('AudioEngine', `Applying ${effectType} effect to track ${trackIndex}`, params);
   
+  // First, make sure audio context is running
+  if (audioContext && audioContext.state === 'suspended') {
+    debug('AudioEngine', "Attempting to resume suspended audio context for effect");
+    try {
+      await audioContext.resume();
+    } catch (resumeError) {
+      console.error("Error resuming audio context:", resumeError);
+      // Continue even if resuming fails
+    }
+  }
+  
   // Remove any existing effect for this track
   if (trackChannels[trackIndex] && trackChannels[trackIndex].__effect) {
     try {
@@ -561,22 +836,65 @@ export const applyTrackEffect = async (trackIndex, effectType, params = {}) => {
     }
   }
   
-  // Ensure we have a channel for this track
-  if (!trackChannels[trackIndex]) {
-    // Create a new channel for this track with volume control
+  // Validate track channel
+  let needNewChannel = false;
+  if (trackChannels[trackIndex]) {
+    try {
+      // Test if the track channel is valid
+      if (typeof trackChannels[trackIndex].connect !== 'function') {
+        debug('AudioEngine', `Track channel ${trackIndex} is invalid, will create new one`);
+        needNewChannel = true;
+      }
+    } catch (e) {
+      debug('AudioEngine', `Error accessing track channel ${trackIndex}, will create new one: ${e.message}`);
+      needNewChannel = true;
+    }
+    
+    // If invalid, remove reference
+    if (needNewChannel) {
+      try {
+        delete trackChannels[trackIndex];
+      } catch (e) {
+        // Ignore errors on deletion
+      }
+    }
+  } else {
+    needNewChannel = true;
+  }
+  
+  // Always create a fresh Tone.js channel to ensure compatibility with effects
+  try {
+    // Disconnect the old channel if it exists
+    if (trackChannels[trackIndex] && trackChannels[trackIndex].disconnect) {
+      try {
+        trackChannels[trackIndex].disconnect();
+      } catch (e) {
+        debug('AudioEngine', `Could not disconnect old channel: ${e.message}`);
+      }
+    }
+    
+    // Create a new channel using Tone.js for compatibility with effects
     trackChannels[trackIndex] = new Tone.Channel({
-      volume: 0,
+      volume: tracks[trackIndex] ? tracks[trackIndex].volume : 0,
       pan: 0, 
       mute: false
     }).toDestination();
-    debug('AudioEngine', `Created new channel for track ${trackIndex}`);
+    
+    debug('AudioEngine', `Created new Tone.js channel for track ${trackIndex}`);
+  } catch (e) {
+    console.error(`Error creating Tone.js channel for track ${trackIndex}:`, e);
+    return false; // Can't proceed without a channel
   }
   
   // If effect type is "none", just connect the channel directly to output
   if (effectType === 'none' || !effectType) {
-    trackChannels[trackIndex].disconnect();
-    trackChannels[trackIndex].toDestination();
-    debug('AudioEngine', `No effect for track ${trackIndex}, using direct connection`);
+    try {
+      trackChannels[trackIndex].disconnect();
+      trackChannels[trackIndex].toDestination();
+      debug('AudioEngine', `No effect for track ${trackIndex}, using direct connection`);
+    } catch (e) {
+      console.error(`Error clearing effects for track ${trackIndex}:`, e);
+    }
     return true;
   }
   
@@ -587,119 +905,154 @@ export const applyTrackEffect = async (trackIndex, effectType, params = {}) => {
   // Create the new effect
   let effect;
   
-  switch (effectType) {
-    case 'delay':
-      const delayTime = params.delayTime !== undefined ? params.delayTime : 0.25;
-      const feedback = params.feedback !== undefined ? params.feedback : 0.5;
+  try {
+    switch (effectType) {
+      case 'delay':
+        const delayTime = params.delayTime !== undefined ? params.delayTime : 0.25;
+        const feedback = params.feedback !== undefined ? params.feedback : 0.5;
+        
+        effect = new Tone.FeedbackDelay({
+          delayTime: delayTime,
+          feedback: feedback,
+          wet: wetDry,
+          maxDelay: 1
+        });
+        debug('AudioEngine', `Created delay effect: time=${delayTime}, feedback=${feedback}, wet=${wetDry}`);
+        break;
+        
+      case 'reverb':
+        const decayTime = params.decay !== undefined ? params.decay * 5 : 2.5;
+        
+        effect = new Tone.Reverb({
+          decay: decayTime,
+          wet: wetDry,
+          preDelay: 0.01
+        });
+        await effect.generate(); // Need to wait for reverb to generate its IR
+        debug('AudioEngine', `Created reverb effect: decay=${decayTime}, wet=${wetDry}`);
+        break;
+        
+      case 'distortion':
+        const distortionAmount = params.distortion !== undefined ? params.distortion : amount;
+        
+        effect = new Tone.Distortion({
+          distortion: distortionAmount,
+          wet: wetDry,
+          oversample: "4x" // Higher quality
+        });
+        debug('AudioEngine', `Created distortion effect: amount=${distortionAmount}, wet=${wetDry}`);
+        break;
+        
+      case 'lowpass':
+        const lpFrequency = params.frequency !== undefined 
+          ? 100 + (params.frequency * 15000) 
+          : 500 + (amount * 10000);
+        const lpQ = params.q !== undefined ? params.q * 10 : 1;
+        
+        effect = new Tone.Filter({
+          type: 'lowpass',
+          frequency: lpFrequency,
+          Q: lpQ
+        });
+        debug('AudioEngine', `Created lowpass filter: freq=${lpFrequency}, Q=${lpQ}`);
+        break;
+        
+      case 'highpass':
+        const hpFrequency = params.frequency !== undefined 
+          ? 20 + (params.frequency * 10000) 
+          : amount * 5000;
+        const hpQ = params.q !== undefined ? params.q * 10 : 1;
+        
+        effect = new Tone.Filter({
+          type: 'highpass',
+          frequency: hpFrequency,
+          Q: hpQ
+        });
+        debug('AudioEngine', `Created highpass filter: freq=${hpFrequency}, Q=${hpQ}`);
+        break;
+        
+      case 'chorus':
+        const depth = params.depth !== undefined ? params.depth : 0.7;
+        const chorusRate = params.rate !== undefined ? params.rate : 4;
+        
+        effect = new Tone.Chorus({
+          frequency: chorusRate,
+          delayTime: 4,
+          depth: depth,
+          wet: wetDry
+        }).start(); // Chorus needs to be started
+        debug('AudioEngine', `Created chorus effect: depth=${depth}, rate=${chorusRate}, wet=${wetDry}`);
+        break;
+        
+      case 'phaser':
+        const phaserRate = params.rate !== undefined ? params.rate * 10 : 0.5;
+        const phaserDepth = params.depth !== undefined ? params.depth : 0.6;
+        
+        effect = new Tone.Phaser({
+          frequency: phaserRate,
+          octaves: 3,
+          baseFrequency: 1000,
+          depth: phaserDepth,
+          wet: wetDry
+        });
+        debug('AudioEngine', `Created phaser effect: rate=${phaserRate}, depth=${phaserDepth}, wet=${wetDry}`);
+        break;
+        
+      default:
+        debug('AudioEngine', `Unknown effect type: ${effectType}, using direct connection`);
+        trackChannels[trackIndex].disconnect();
+        trackChannels[trackIndex].toDestination();
+        return true;
+    }
+    
+    // Store the effect on the channel for later cleanup
+    trackChannels[trackIndex].__effect = effect;
+    
+    // IMPORTANT: Create proper chain to ensure effect is heard
+    try {
+      // First disconnect existing connections
+      trackChannels[trackIndex].disconnect();
       
-      effect = new Tone.FeedbackDelay({
-        delayTime: delayTime,
-        feedback: feedback,
-        wet: wetDry,
-        maxDelay: 1
-      });
-      debug('AudioEngine', `Created delay effect: time=${delayTime}, feedback=${feedback}, wet=${wetDry}`);
-      break;
+      // Check if channel has the chain method (Tone.js objects do)
+      if (typeof trackChannels[trackIndex].chain === 'function') {
+        // Connect using Tone.js chain method
+        trackChannels[trackIndex].chain(effect, Tone.Destination);
+        debug('AudioEngine', `Connected effect ${effectType} for track ${trackIndex} using Tone.js chain`);
+      } else {
+        // Use standard Web Audio API connect methods
+        trackChannels[trackIndex].disconnect();
+        trackChannels[trackIndex].connect(effect);
+        effect.connect(Tone.Destination);
+        debug('AudioEngine', `Connected effect ${effectType} for track ${trackIndex} using standard connect methods`);
+      }
       
-    case 'reverb':
-      const decayTime = params.decay !== undefined ? params.decay * 5 : 2.5;
+      return true;
+    } catch (chainError) {
+      console.error(`Error connecting effect for track ${trackIndex}:`, chainError);
       
-      effect = new Tone.Reverb({
-        decay: decayTime,
-        wet: wetDry,
-        preDelay: 0.01
-      });
-      await effect.generate(); // Need to wait for reverb to generate its IR
-      debug('AudioEngine', `Created reverb effect: decay=${decayTime}, wet=${wetDry}`);
-      break;
+      // Attempt to recover by connecting directly
+      try {
+        trackChannels[trackIndex].disconnect();
+        trackChannels[trackIndex].toDestination();
+      } catch (e) {
+        console.warn(`Recovery attempt also failed: ${e.message}`);
+      }
       
-    case 'distortion':
-      const distortionAmount = params.distortion !== undefined ? params.distortion : amount;
-      
-      effect = new Tone.Distortion({
-        distortion: distortionAmount,
-        wet: wetDry,
-        oversample: "4x" // Higher quality
-      });
-      debug('AudioEngine', `Created distortion effect: amount=${distortionAmount}, wet=${wetDry}`);
-      break;
-      
-    case 'lowpass':
-      const lpFrequency = params.frequency !== undefined 
-        ? 100 + (params.frequency * 15000) 
-        : 500 + (amount * 10000);
-      const lpQ = params.q !== undefined ? params.q * 10 : 1;
-      
-      effect = new Tone.Filter({
-        type: 'lowpass',
-        frequency: lpFrequency,
-        Q: lpQ
-      });
-      debug('AudioEngine', `Created lowpass filter: freq=${lpFrequency}, Q=${lpQ}`);
-      break;
-      
-    case 'highpass':
-      const hpFrequency = params.frequency !== undefined 
-        ? 20 + (params.frequency * 10000) 
-        : amount * 5000;
-      const hpQ = params.q !== undefined ? params.q * 10 : 1;
-      
-      effect = new Tone.Filter({
-        type: 'highpass',
-        frequency: hpFrequency,
-        Q: hpQ
-      });
-      debug('AudioEngine', `Created highpass filter: freq=${hpFrequency}, Q=${hpQ}`);
-      break;
-      
-    case 'chorus':
-      const depth = params.depth !== undefined ? params.depth : 0.7;
-      const chorusRate = params.rate !== undefined ? params.rate : 4;
-      
-      effect = new Tone.Chorus({
-        frequency: chorusRate,
-        delayTime: 4,
-        depth: depth,
-        wet: wetDry
-      }).start(); // Chorus needs to be started
-      debug('AudioEngine', `Created chorus effect: depth=${depth}, rate=${chorusRate}, wet=${wetDry}`);
-      break;
-      
-    case 'phaser':
-      const phaserRate = params.rate !== undefined ? params.rate * 10 : 0.5;
-      const phaserDepth = params.depth !== undefined ? params.depth : 0.6;
-      
-      effect = new Tone.Phaser({
-        frequency: phaserRate,
-        octaves: 3,
-        baseFrequency: 1000,
-        depth: phaserDepth,
-        wet: wetDry
-      });
-      debug('AudioEngine', `Created phaser effect: rate=${phaserRate}, depth=${phaserDepth}, wet=${wetDry}`);
-      break;
-      
-    default:
-      debug('AudioEngine', `Unknown effect type: ${effectType}, using direct connection`);
+      return false;
+    }
+  } catch (effectError) {
+    console.error(`Error creating ${effectType} effect for track ${trackIndex}:`, effectError);
+    
+    // Attempt to recover by connecting directly
+    try {
       trackChannels[trackIndex].disconnect();
       trackChannels[trackIndex].toDestination();
-      return true;
+    } catch (e) {
+      // Ignore recovery errors  
+    }
+    
+    return false;
   }
-  
-  // Store the effect on the channel for later cleanup
-  trackChannels[trackIndex].__effect = effect;
-  
-  // IMPORTANT: Create proper chain to ensure effect is heard
-  // First disconnect existing connections
-  trackChannels[trackIndex].disconnect();
-  
-  // Connect properly - channel -> effect -> destination
-  trackChannels[trackIndex].chain(effect, Tone.Destination);
-  
-  debug('AudioEngine', `Connected effect ${effectType} for track ${trackIndex} to audio chain`);
-  
-  // Return success
-  return true;
 };
 
 class AudioEngine {
@@ -722,25 +1075,32 @@ class AudioEngine {
     // We'll use these to track which tracks are triggered on each beat
     this.triggeredTracks = new Set();
     
-    // Create a master output with limiter to prevent clipping
-    this.masterLimiter = new Tone.Limiter(-3).toDestination();
-    this.masterVolume = new Tone.Volume(-6).connect(this.masterLimiter);
-    
-    // Create a metronome click
-    this.metronomeClick = new Tone.MembraneSynth({
-      envelope: {
-        attack: 0.001,
-        decay: 0.1,
-        sustain: 0,
-        release: 0.1
-      },
-      octaves: 4,
-      pitchDecay: 0.1,
-      volume: -10
-    }).connect(this.masterVolume);
-    
-    // For testing samples
-    this.testPlayer = new Tone.Player().connect(this.masterVolume);
+    try {
+      // Create a master output with limiter to prevent clipping
+      this.masterLimiter = new Tone.Limiter(-3).toDestination();
+      this.masterVolume = new Tone.Volume(-6).connect(this.masterLimiter);
+      
+      // Create a metronome click
+      this.metronomeClick = new Tone.MembraneSynth({
+        envelope: {
+          attack: 0.001,
+          decay: 0.1,
+          sustain: 0,
+          release: 0.1
+        },
+        octaves: 4,
+        pitchDecay: 0.1,
+        volume: -10
+      }).connect(this.masterVolume);
+      
+      // For testing samples
+      this.testPlayer = new Tone.Player().connect(this.masterVolume);
+      
+      debug('AudioEngine', 'Successfully initialized audio components');
+    } catch (error) {
+      console.error('Error creating audio components:', error);
+      // Continue initialization despite errors
+    }
   }
   
   // Initialize the audio engine
@@ -1029,6 +1389,16 @@ class AudioEngine {
     
     debug('applyEffect', `Applying ${effectType} effect to track ${trackIndex}`, params);
     
+    // Make sure audio context is running
+    if (Tone.context.state === 'suspended') {
+      debug('applyEffect', "Attempting to resume Tone.js audio context");
+      try {
+        await Tone.context.resume();
+      } catch (error) {
+        console.error("Error resuming Tone.js context:", error);
+      }
+    }
+    
     // Remove any existing effect
     if (this.effects[trackIndex]) {
       try {
@@ -1043,23 +1413,34 @@ class AudioEngine {
       }
     }
     
-    // Ensure we have a channel for this track
-    if (!trackChannels[trackIndex]) {
-      // Create a new channel for this track with volume control
-      trackChannels[trackIndex] = new Tone.Channel({
-        volume: 0,
-        pan: 0,
-        mute: false
-      }).toDestination();
-      debug('applyEffect', `Created new channel for track ${trackIndex}`);
+    // Always create a fresh Tone.js channel for effects compatibility
+    if (!trackChannels[trackIndex] || typeof trackChannels[trackIndex].connect !== 'function') {
+      try {
+        // Create a new channel for this track with volume control
+        const track = tracks[trackIndex] || { volume: 0.8, mute: false };
+        trackChannels[trackIndex] = new Tone.Channel({
+          volume: track.volume,
+          pan: 0,
+          mute: track.mute
+        }).toDestination();
+        debug('applyEffect', `Created new Tone.js channel for track ${trackIndex}`);
+      } catch (e) {
+        console.error(`Error creating channel for track ${trackIndex}:`, e);
+        return false;
+      }
     }
     
     // If effect type is "none", just connect the channel directly to output
     if (effectType === 'none' || !effectType) {
-      trackChannels[trackIndex].disconnect();
-      trackChannels[trackIndex].toDestination();
-      debug('applyEffect', `No effect for track ${trackIndex}, using direct connection`);
-      return true;
+      try {
+        trackChannels[trackIndex].disconnect();
+        trackChannels[trackIndex].toDestination();
+        debug('applyEffect', `No effect for track ${trackIndex}, using direct connection`);
+        return true;
+      } catch (e) {
+        console.error(`Error clearing effects for track ${trackIndex}:`, e);
+        return false;
+      }
     }
     
     // Extract parameters with defaults
@@ -1069,119 +1450,153 @@ class AudioEngine {
     // Create the new effect
     let effect;
     
-    switch (effectType) {
-      case 'delay':
-        const delayTime = params.delayTime !== undefined ? params.delayTime : 0.25;
-        const feedback = params.feedback !== undefined ? params.feedback : 0.5;
+    try {
+      switch (effectType) {
+        case 'delay':
+          const delayTime = params.delayTime !== undefined ? params.delayTime : 0.25;
+          const feedback = params.feedback !== undefined ? params.feedback : 0.5;
+          
+          effect = new Tone.FeedbackDelay({
+            delayTime: delayTime,
+            feedback: feedback,
+            wet: wetDry,
+            maxDelay: 1
+          });
+          debug('applyEffect', `Created delay effect: time=${delayTime}, feedback=${feedback}, wet=${wetDry}`);
+          break;
+          
+        case 'reverb':
+          const decayTime = params.decay !== undefined ? params.decay * 5 : 2.5;
+          
+          effect = new Tone.Reverb({
+            decay: decayTime,
+            wet: wetDry,
+            preDelay: 0.01
+          });
+          await effect.generate(); // Need to wait for reverb to generate its IR
+          debug('applyEffect', `Created reverb effect: decay=${decayTime}, wet=${wetDry}`);
+          break;
+          
+        case 'distortion':
+          const distortionAmount = params.distortion !== undefined ? params.distortion : amount;
+          
+          effect = new Tone.Distortion({
+            distortion: distortionAmount,
+            wet: wetDry,
+            oversample: "4x" // Higher quality
+          });
+          debug('applyEffect', `Created distortion effect: amount=${distortionAmount}, wet=${wetDry}`);
+          break;
+          
+        case 'lowpass':
+          const lpFrequency = params.frequency !== undefined 
+            ? 100 + (params.frequency * 15000) 
+            : 500 + (amount * 10000);
+          const lpQ = params.q !== undefined ? params.q * 10 : 1;
+          
+          effect = new Tone.Filter({
+            type: 'lowpass',
+            frequency: lpFrequency,
+            Q: lpQ
+          });
+          debug('applyEffect', `Created lowpass filter: freq=${lpFrequency}, Q=${lpQ}`);
+          break;
+          
+        case 'highpass':
+          const hpFrequency = params.frequency !== undefined 
+            ? 20 + (params.frequency * 10000) 
+            : amount * 5000;
+          const hpQ = params.q !== undefined ? params.q * 10 : 1;
+          
+          effect = new Tone.Filter({
+            type: 'highpass',
+            frequency: hpFrequency,
+            Q: hpQ
+          });
+          debug('applyEffect', `Created highpass filter: freq=${hpFrequency}, Q=${hpQ}`);
+          break;
+          
+        case 'chorus':
+          const depth = params.depth !== undefined ? params.depth : 0.7;
+          const chorusRate = params.rate !== undefined ? params.rate : 4;
+          
+          effect = new Tone.Chorus({
+            frequency: chorusRate,
+            delayTime: 4,
+            depth: depth,
+            wet: wetDry
+          }).start(); // Chorus needs to be started
+          debug('applyEffect', `Created chorus effect: depth=${depth}, rate=${chorusRate}, wet=${wetDry}`);
+          break;
+          
+        case 'phaser':
+          const phaserRate = params.rate !== undefined ? params.rate * 10 : 0.5;
+          const phaserDepth = params.depth !== undefined ? params.depth : 0.6;
+          
+          effect = new Tone.Phaser({
+            frequency: phaserRate,
+            octaves: 3,
+            baseFrequency: 1000,
+            depth: phaserDepth,
+            wet: wetDry
+          });
+          debug('applyEffect', `Created phaser effect: rate=${phaserRate}, depth=${phaserDepth}, wet=${wetDry}`);
+          break;
+          
+        default:
+          debug('applyEffect', `Unknown effect type: ${effectType}, using direct connection`);
+          trackChannels[trackIndex].disconnect();
+          trackChannels[trackIndex].toDestination();
+          return true;
+      }
+      
+      // Store the effect
+      this.effects[trackIndex] = effect;
+      
+      // Connect the effect in the audio chain
+      try {
+        // First disconnect existing connections
+        trackChannels[trackIndex].disconnect();
         
-        effect = new Tone.FeedbackDelay({
-          delayTime: delayTime,
-          feedback: feedback,
-          wet: wetDry,
-          maxDelay: 1
-        });
-        debug('applyEffect', `Created delay effect: time=${delayTime}, feedback=${feedback}, wet=${wetDry}`);
-        break;
+        // Check if the channel has the chain method (Tone.js objects do)
+        if (typeof trackChannels[trackIndex].chain === 'function') {
+          // Connect using Tone.js chain method
+          trackChannels[trackIndex].chain(effect, Tone.Destination);
+          debug('applyEffect', `Connected effect ${effectType} for track ${trackIndex} using Tone.js chain`);
+        } else {
+          // Use standard Web Audio API connect methods
+          trackChannels[trackIndex].connect(effect);
+          effect.connect(Tone.Destination);
+          debug('applyEffect', `Connected effect ${effectType} for track ${trackIndex} using standard connect methods`);
+        }
         
-      case 'reverb':
-        const decayTime = params.decay !== undefined ? params.decay * 5 : 2.5;
+        return true;
+      } catch (connectionError) {
+        console.error(`Error connecting effect ${effectType} for track ${trackIndex}:`, connectionError);
         
-        effect = new Tone.Reverb({
-          decay: decayTime,
-          wet: wetDry,
-          preDelay: 0.01
-        });
-        await effect.generate(); // Need to wait for reverb to generate its IR
-        debug('applyEffect', `Created reverb effect: decay=${decayTime}, wet=${wetDry}`);
-        break;
+        // Try to recover with direct connection
+        try {
+          trackChannels[trackIndex].disconnect();
+          trackChannels[trackIndex].toDestination();
+        } catch (e) {
+          console.warn(`Recovery attempt also failed: ${e.message}`);
+        }
         
-      case 'distortion':
-        const distortionAmount = params.distortion !== undefined ? params.distortion : amount;
-        
-        effect = new Tone.Distortion({
-          distortion: distortionAmount,
-          wet: wetDry,
-          oversample: "4x" // Higher quality
-        });
-        debug('applyEffect', `Created distortion effect: amount=${distortionAmount}, wet=${wetDry}`);
-        break;
-        
-      case 'lowpass':
-        const lpFrequency = params.frequency !== undefined 
-          ? 100 + (params.frequency * 15000) 
-          : 500 + (amount * 10000);
-        const lpQ = params.q !== undefined ? params.q * 10 : 1;
-        
-        effect = new Tone.Filter({
-          type: 'lowpass',
-          frequency: lpFrequency,
-          Q: lpQ
-        });
-        debug('applyEffect', `Created lowpass filter: freq=${lpFrequency}, Q=${lpQ}`);
-        break;
-        
-      case 'highpass':
-        const hpFrequency = params.frequency !== undefined 
-          ? 20 + (params.frequency * 10000) 
-          : amount * 5000;
-        const hpQ = params.q !== undefined ? params.q * 10 : 1;
-        
-        effect = new Tone.Filter({
-          type: 'highpass',
-          frequency: hpFrequency,
-          Q: hpQ
-        });
-        debug('applyEffect', `Created highpass filter: freq=${hpFrequency}, Q=${hpQ}`);
-        break;
-        
-      case 'chorus':
-        const depth = params.depth !== undefined ? params.depth : 0.7;
-        const chorusRate = params.rate !== undefined ? params.rate : 4;
-        
-        effect = new Tone.Chorus({
-          frequency: chorusRate,
-          delayTime: 4,
-          depth: depth,
-          wet: wetDry
-        }).start(); // Chorus needs to be started
-        debug('applyEffect', `Created chorus effect: depth=${depth}, rate=${chorusRate}, wet=${wetDry}`);
-        break;
-        
-      case 'phaser':
-        const phaserRate = params.rate !== undefined ? params.rate * 10 : 0.5;
-        const phaserDepth = params.depth !== undefined ? params.depth : 0.6;
-        
-        effect = new Tone.Phaser({
-          frequency: phaserRate,
-          octaves: 3,
-          baseFrequency: 1000,
-          depth: phaserDepth,
-          wet: wetDry
-        });
-        debug('applyEffect', `Created phaser effect: rate=${phaserRate}, depth=${phaserDepth}, wet=${wetDry}`);
-        break;
-        
-      default:
-        debug('applyEffect', `Unknown effect type: ${effectType}, using direct connection`);
+        return false;
+      }
+    } catch (effectError) {
+      console.error(`Error creating ${effectType} effect for track ${trackIndex}:`, effectError);
+      
+      // Attempt to recover by connecting directly
+      try {
         trackChannels[trackIndex].disconnect();
         trackChannels[trackIndex].toDestination();
-        return true;
+      } catch (e) {
+        // Ignore recovery errors  
+      }
+      
+      return false;
     }
-    
-    // Store the effect
-    this.effects[trackIndex] = effect;
-    
-    // IMPORTANT: Create proper chain to ensure effect is heard
-    // First disconnect existing connections
-    trackChannels[trackIndex].disconnect();
-    
-    // Connect properly - channel -> effect -> destination
-    trackChannels[trackIndex].chain(effect, Tone.Destination);
-    
-    debug('applyEffect', `Connected effect ${effectType} for track ${trackIndex} to audio chain`);
-    
-    // Return success
-    return true;
   }
 }
 
